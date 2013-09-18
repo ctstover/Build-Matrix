@@ -1,0 +1,7 @@
+NONE.NONE.PROJECT_NAME = "Build Matrix"
+BINARY.MAIN.NAME = bldmtrx
+BINARY.MAIN.FILES = "./src/database.c ./src/testresults.c ./src/setup.c ./src/protocol.c ./src/files.c ./src/strings.c ./src/client.c ./src/server.c ./src/parameters.c ./src/main.c ./src/console.c ./src/portability.c ./src/users.c ./src/connections.c ./src/configuration.c ./src/report.c"
+BINARY.MAIN.FILE_DEPENDS = "./src/prototypes.h"
+BINARY.MAIN.EXT_DEPENDS = "sqlite3 crypto"
+
+

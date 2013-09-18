@@ -1,0 +1,899 @@
+/*
+    Copyright 2013 Stover Enterprises, LLC (An Alabama Limited Liability Corporation) 
+    Written by C. Thomas Stover
+
+    This file is part of the program Build Matrix.
+    See http://buildmatrix.stoverenterprises.com for more information.
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include "prototypes.h"
+
+struct parameter_grid_row
+{
+ char **values;
+};
+
+struct report_details
+{
+ struct buildmatrix_context *ctx;
+ char *project_name;
+ time_t generation_time;
+ time_t lastest_build;
+ int n_branches, n_jobs, n_users, n_hosts, n_builds, n_tests, n_parameters;
+ char **users_list, **jobs_list, **branches_list, **hosts_list, **tests_list, **parameters_list;
+ struct list_builds_data **builds;
+ struct parameters **parameters;
+ struct parameter_grid_row **parameter_rows;
+};
+
+struct service_list_strategy_report_context
+{
+ char **array;
+ int array_size;
+};
+
+int service_list_strategy_report_start(const struct buildmatrix_context *ctx, 
+                                        void * const strategy_context, const void *ptr)
+{
+ struct service_list_strategy_report_context *sc;
+ sc = (struct service_list_strategy_report_context *) strategy_context;
+
+ sc->array_size = 0;
+ sc->array = NULL;
+
+ return 0;
+}
+
+int service_list_strategy_report_iterative(const struct buildmatrix_context *ctx, 
+                                            void * const strategy_context, const void *ptr)
+{
+ struct service_list_strategy_report_context *sc;
+ sc = (struct service_list_strategy_report_context *) strategy_context;
+
+ if(add_to_string_array(&(sc->array), sc->array_size, ptr, strlen(ptr), 0))
+  return 1;
+
+ sc->array_size++;
+
+ return 0;
+}
+
+int service_list_strategy_report_done(const struct buildmatrix_context *ctx, 
+                                       void * const strategy_context, const void *ptr)
+{
+ struct service_list_strategy_report_context *sc;
+ sc = (struct service_list_strategy_report_context *) strategy_context;
+
+ return 0;
+}
+
+struct service_list_builds_strategy_report_context
+{
+ struct list_builds_data **array;
+ int length;
+ int size;
+};
+
+int service_list_builds_strategy_report_start(const struct buildmatrix_context *ctx, 
+                                               void * const strategy_context, const void *ptr)
+{
+ struct service_list_builds_strategy_report_context *sc;
+ sc = (struct service_list_builds_strategy_report_context *) strategy_context;
+
+ sc->array = NULL;
+ sc->length = 0;
+ sc->size = 0;
+
+ return 0;
+}
+
+int service_list_builds_strategy_report_iterative(const struct buildmatrix_context *ctx, 
+                                                   void * const strategy_context, const void *ptr)
+{
+ struct service_list_builds_strategy_report_context *sc;
+ sc = (struct service_list_builds_strategy_report_context *) strategy_context;
+ struct list_builds_data *data = (struct list_builds_data *) ptr;
+
+ if(append_list_build_data_array(ctx, data, &(sc->array), &(sc->length), &(sc->size)))
+  return 1;
+
+ return 0;
+}
+
+int service_list_builds_strategy_report_done(const struct buildmatrix_context *ctx, 
+                                              void * const strategy_context, const void *ptr)
+{
+ struct service_list_builds_strategy_report_context *sc;
+ sc = (struct service_list_builds_strategy_report_context *) strategy_context;
+
+ return 0;
+}
+
+int render_relative_db_file_path(const char *unique_identifier, const char *filename,
+                                 char *string, int size)
+{
+ char dir[3];
+
+ snprintf(dir, 3, "%s", unique_identifier);
+
+ return snprintf(string, size, "./%s/%s-%s", dir, unique_identifier, filename);
+}
+
+int render_report(struct report_details *report)
+{
+ FILE *output;
+ char time_string[128], fs_string[32], path_string[1024];
+ struct tm tm;
+ time_t ti;
+ int i, j;
+ const char *s;
+
+ if(chdir(report->ctx->local_project_directory))
+ {
+  fprintf(stderr, "chdir(%s) failed: %s\n", report->ctx->local_project_directory, strerror(errno));
+  return 1;
+ }
+
+ if((output = fopen("./dashboard.html", "w")) == NULL)
+ {
+  fprintf(stderr, "%s\n", strerror(errno));
+  return 1;
+ }
+
+ localtime_r(&(report->generation_time), &tm);
+ strftime(time_string, 128, "%c", &tm);
+
+ fprintf(output, 
+         "<html>\n"
+         " <!-- This file was dynamically generated by Build Configuration Adjust\n"
+         "      This is the fallback/default report output format, and is formated in \n"
+         "      plain, old fashion html for wide compatibility. --!>\n"
+         " <head>\n"
+         "  <meta charset=\"utf-8\">\n"
+         "  <title>%s - Build Matrix Dashboard Report</title>\n"
+         " </head>\n"
+         " <body>\n", report->project_name);
+
+ fprintf(output, 
+         "  <table width=100%%><tr><td>\n"
+         "   <h1>%s</h1>\n"
+         "   <h2>Build Matrix Dashboard Report</h2>\n", report->project_name);
+
+ fprintf(output,
+         "  </td><td>\n"
+         "   <h3 align=right>Report Generated on <i>%s</i></h3>\n"
+         "  </td></tr></table>\n"
+         "  <hr>\n", time_string);
+ 
+ fprintf(output,
+         " <table width=100%%><tr><td>\n"
+         "  <h2>Table of Contents</h2>\n"
+         "  <h3>1. <a href=\"#builds\">Builds</a></h3>\n");
+
+ if(report->n_parameters > 0)
+  fprintf(output, 
+          "  <h3>2. <a href=\"#parameters\">Parameters</a></h3>\n");
+
+ fprintf(output, 
+         "  <h3>3. <a href=\"#tests\">Tests</a></h3>\n"
+         "  <h3>Appendix B: <a href=\"#appendix_B\"><i>List of Branches</i></a></h3>\n"
+         "  <h3>Appendix J: <a href=\"#appendix_J\"><i>List of Jobs</i></a></h3>\n"
+         "  <h3>Appendix N: <a href=\"#appendix_N\"><i>List of Build Nodes</i></a></h3>\n"
+         "  <h3>Appendix U: <a href=\"#appendix_U\"><i>List of Users</i></a></h3>\n");
+
+ if(report->n_parameters > 0)
+  fprintf(output,
+         "  <h3>Appendix P: <a href=\"#appendix_P\"><i>List of Parameters</i></a></h3>\n");
+
+ fprintf(output, 
+         "  <h3>Appendix T: <a href=\"#appendix_T\"><i>List of Tests</i></a></h3>\n"
+         "  <h3>Appendix Z: <a href=\"#appendix_Z\"><i>Build Details</i></a></h3>\n"
+         " </td><td valign=top>\n"
+         "  <table cellpadding=3><tr><td bgcolor=lightgray>\n"
+         "   <h3 align=center>Statistics</h3>\n"
+         "   <p>Most Recent Build: </p>\n"
+         "   <p>Number of <a href=\"#appendix_B\">Branches</a>: %d</p>\n"
+         "   <p>Number of <a href=\"#appendix_J\">Jobs</a>: %d</p>\n"
+         "   <p>Number of <a href=\"#appendix_N\">Build Nodes</a>: %d</p>\n"
+         "   <p>Number of <a href=\"#appendix_U\">Users</a>: %d</p>\n"
+         "   <p>Number of <a href=\"#appendix_T\">Tests</a>: %d</p>\n"
+         "   <p>Number of <a href=\"#appendix_P\">Parameters</a>: %d</p>\n"
+         "  </td></tr></table>\n"
+         " </td></tr></table>\n", 
+         report->n_branches, report->n_jobs, report->n_hosts, report->n_users,
+         report->n_tests, report->n_parameters);
+
+ fprintf(output, 
+         " </body>\n"
+         "</html>");
+
+ fprintf(output, 
+         "  <h2><a name=\"builds\">Builds</h2>\n");
+
+ fprintf(output,
+         "   <table border=1>\n"
+         "    <tr>\n"
+         "     <td align=center><b>Indentifier</b></td>\n"
+         "     <td align=center><b>Branch</b></td>\n"
+         "     <td align=center><b>Job</b></td>\n"
+         "     <td align=center><b>Node</b></td>\n"
+         "     <td align=center><b>Revision</b></td>\n"
+         "     <td align=center><b>User</b></td>\n"
+         "     <td align=center><b>Result</b></td>\n"
+         "     <td align=center><b>Submit Time</b></td>\n"
+         "     <td align=center><b>P</b></td>\n"
+         "     <td align=center><b>F</b></td>\n"
+         "     <td align=center><b>I</b></td>\n"
+         "     <td align=center><b>Parameters</b></td>\n"
+         "     <td align=center><b>Tests</b></td>\n"
+         "     <td align=center><b>Report</b></td>\n"
+         "     <td align=center><b>Output</b></td>\n"
+         "     <td align=center><b>Signiture</b></td>\n"
+         "    </tr>\n");
+
+ for(i=0; i<report->n_builds; i++)
+ {
+  fprintf(output, "    <tr>\n");
+
+  if( (s = report->builds[i]->unique_identifier) == NULL)
+   fprintf(output, "     <td></td>\n");
+  else
+   fprintf(output, "     <td><a href=\"#%s\">%s</a></td>\n", s, s);
+
+  if((s = report->builds[i]->branch) == NULL)
+   fprintf(output, "     <td></td>\n");
+  else
+   fprintf(output, "     <td>%s</td>\n", s);
+
+  if((s = report->builds[i]->job_name) == NULL)
+   fprintf(output, "     <td></td>\n");
+  else
+   fprintf(output, "     <td>%s</td>\n", s);
+
+  if((s = report->builds[i]->build_node) == NULL)
+   fprintf(output, "     <td></td>\n");
+  else
+   fprintf(output, "     <td>%s</td>\n", s);
+
+  if((s = report->builds[i]->revision) == NULL)
+   fprintf(output, "     <td></td>\n");
+  else
+   fprintf(output, "     <td>%s</td>\n", s);
+
+  if((s = report->builds[i]->user) == NULL)
+   fprintf(output, "     <td></td>\n");
+  else
+   fprintf(output, "     <td>%s</td>\n", s);
+
+  switch(report->builds[i]->build_result)
+  {
+   case 0:
+        fprintf(output, "     <td bgcolor=red>failed</td>\n");
+        break;
+
+   case 1:
+        fprintf(output, "     <td bgcolor=green>passed</td>\n");
+        break;
+
+
+   default:
+        fprintf(output, "     <td></td>\n");
+  }
+
+  ti = report->builds[i]->build_time;
+  localtime_r(&ti, &tm);
+  strftime(time_string, 128, "%c", &tm);
+  fprintf(output, "     <td>%s</td>\n", time_string);
+
+  fprintf(output, "     <td>%d</td>\n", report->builds[i]->passed);
+  fprintf(output, "     <td>%d</td>\n", report->builds[i]->failed);
+  fprintf(output, "     <td>%d</td>\n", report->builds[i]->incompleted);
+
+  fprintf(output, "     <td>%s</td>\n", report->builds[i]->has_parameters ? "yes" : "no");
+  fprintf(output, "     <td>%s</td>\n", report->builds[i]->has_tests ? "yes" : "no");
+  fprintf(output, "     <td>%s</td>\n", (report->builds[i]->report_name != NULL) ? "yes" : "no");
+  fprintf(output, "     <td>%s</td>\n", (report->builds[i]->output_name != NULL) ? "yes" : "no");
+  fprintf(output, "     <td>%s</td>\n", (report->builds[i]->checksum_name != NULL) ? "yes" : "no");
+
+  fprintf(output, "    </tr>\n");
+ }
+
+ fprintf(output,
+         "    <tr>\n"
+         "     <td align=center><b>Indentifier</b></td>\n"
+         "     <td align=center><b>Branch</b></td>\n"
+         "     <td align=center><b>Job</b></td>\n"
+         "     <td align=center><b>Node</b></td>\n"
+         "     <td align=center><b>Revision</b></td>\n"
+         "     <td align=center><b>User</b></td>\n"
+         "     <td align=center><b>Result</b></td>\n"
+         "     <td align=center><b>Submit Time</b></td>\n"
+         "     <td align=center><b>P</b></td>\n"
+         "     <td align=center><b>F</b></td>\n"
+         "     <td align=center><b>I</b></td>\n"
+         "     <td align=center><b>Parameters</b></td>\n"
+         "     <td align=center><b>Tests</b></td>\n"
+         "     <td align=center><b>Report</b></td>\n"
+         "     <td align=center><b>Output</b></td>\n"
+         "     <td align=center><b>Signiture</b></td>\n"
+         "    </tr>\n"
+         "   </table>\n");
+
+ if(report->n_parameters > 0)
+ {
+  fprintf(output, 
+          "  <h2><a name=\"parameters\">Parameters</h2>\n");
+
+  fprintf(output, 
+          "   <table border=1>\n"
+          "    <tr>\n"
+          "     <td>Parameters</td>\n");
+
+  for(j=0; j<report->n_builds; j++)
+  {
+   if(report->parameters[j]->n_pairs > 0)
+   {
+    s = report->builds[j]->unique_identifier;
+    fprintf(output, "     <td><a href=\"#%s\">%s</a></td>\n", s, s);
+   }
+  }
+  fprintf(output, "    </tr>\n");
+         
+  for(i=0; i<report->n_parameters; i++)
+  {
+   fprintf(output, "    <tr>\n");
+   fprintf(output, "     <td>%s</td>\n", report->parameters_list[i]); 
+   for(j=0; j<report->n_builds; j++)
+   {
+    if(report->parameters[j]->n_pairs > 0)
+    {
+     if(report->parameter_rows[i]->values[j] == NULL)
+      fprintf(output, "     <td>n/a</td>\n");    
+     else
+      fprintf(output, "     <td>%s</td>\n", report->parameter_rows[i]->values[j]); 
+    }
+   }
+   fprintf(output, "    </tr>\n");
+  }
+  fprintf(output,
+          "   </table>\n");
+ }
+
+ fprintf(output, 
+         "  <h2><a name=\"tests\">Tests</h2>\n");
+
+ fprintf(output, 
+         "  <h2><a name=\"appendix_B\">Appendix B: <i>List of Branches</i></a></h2>\n");
+
+ for(i=0; i<report->n_branches; i++)
+ {
+  fprintf(output, "  <p>%s</p>\n", report->branches_list[i]);
+ }
+
+ fprintf(output, 
+         "  <h2><a name=\"appendix_J\">Appendix J: <i>List of Jobs</i></a></h2\n");
+
+ for(i=0; i<report->n_jobs; i++)
+ {
+  fprintf(output, "  <p>%s</p>\n", report->jobs_list[i]);
+ }
+
+ fprintf(output, 
+         "  <h2><a name=\"appendix_N\">Appendix N: <i>List of Build Nodes</i></a></h2\n");
+
+ for(i=0; i<report->n_hosts; i++)
+ {
+  fprintf(output, "  <p>%s</p>\n", report->hosts_list[i]);
+ }
+ if(report->n_hosts == 0)
+  fprintf(output, "   <p>none</p>\n");
+
+ fprintf(output, 
+         "  <h2><a name=\"appendix_U\">Appendix U: <i>List of Users</i></a></h2\n");
+
+ for(i=0; i<report->n_users; i++)
+ {
+  fprintf(output, "  <p>%s</p>\n", report->users_list[i]);
+ }
+ if(report->n_users == 0)
+  fprintf(output, "   <p>none</p>\n");
+
+ fprintf(output, 
+         "  <h2><a name=\"appendix_P\">Appendix P: <i>List of Parameters</i></a></h2\n");
+
+ for(i=0; i<report->n_parameters; i++)
+ {
+  fprintf(output, "  <p>%s</p>\n", report->parameters_list[i]);
+ }
+ if(report->n_parameters == 0)
+  fprintf(output, "   <p>none</p>\n");
+
+ fprintf(output, 
+         "  <h2><a name=\"appendix_T\">Appendix T: <i>List of Tests</i></a></h2\n");
+
+ for(i=0; i<report->n_tests; i++)
+ {
+  fprintf(output, "  <p>%s</p>\n", report->tests_list[i]);
+ }
+ if(report->n_tests == 0)
+  fprintf(output, "   <p>none</p>\n");
+
+ fprintf(output, 
+         "  <h2><a name=\"appendix_Z\">Appendix Z: <i>Build Details</i></a></h2\n");
+
+ for(i=0; i<report->n_builds; i++)
+ {
+  s = report->builds[i]->unique_identifier;
+
+  fprintf(output, " <h3><a name=\"%s\">Details of Build %s</a></h3>\n", s, s);
+
+
+  if((s = report->builds[i]->report_name) != NULL)
+  {
+   render_relative_db_file_path(report->builds[i]->unique_identifier, s, path_string, 1024);
+   file_size_to_string(file_size(report->ctx, path_string), fs_string, 32);
+   fprintf(output, " <p>The build report (%s) <a href=\"%s\">%s</a></p>\n",
+           fs_string, path_string, s);
+  }
+
+  if((s = report->builds[i]->output_name) != NULL)
+  {
+   render_relative_db_file_path(report->builds[i]->unique_identifier, s, path_string, 1024);
+   file_size_to_string(file_size(report->ctx, path_string), fs_string, 32);
+   fprintf(output, " <p>The build output (%s) <a href=\"%s\">%s</a></p>\n",
+           fs_string, path_string, s);
+  }
+
+  if((s = report->builds[i]->checksum_name) != NULL)
+  {
+   render_relative_db_file_path(report->builds[i]->unique_identifier, s, path_string, 1024);
+   file_size_to_string(file_size(report->ctx, path_string), fs_string, 32);
+   fprintf(output, " <p>The checksum / signature (%s) <a href=\"%s\">%s</a></p>\n",
+           fs_string, path_string, s);
+  }
+
+  fprintf(output, "<hr>\n");
+ }
+
+
+ fclose(output);
+
+ return 0;
+}
+
+void free_report(struct report_details *report)
+{
+ int i;
+
+ if(report == NULL)
+  return;
+
+ if(report->project_name != NULL)
+  free(report->project_name);
+
+ if(report->branches_list != NULL)
+  free_string_array(report->branches_list, report->n_branches);
+
+ if(report->hosts_list != NULL)
+  free_string_array(report->hosts_list, report->n_hosts);
+
+ if(report->jobs_list != NULL)
+  free_string_array(report->jobs_list, report->n_jobs);
+
+ if(report->users_list != NULL)
+  free_string_array(report->users_list, report->n_users);
+
+ if(report->parameters_list != NULL)
+  free_string_array(report->parameters_list, report->n_parameters);
+
+ if(report->builds != NULL)
+ {
+  for(i=0; i<report->n_builds; i++)
+  {
+   if(report->builds[i] != NULL)
+    free(report->builds[i]);
+  }
+  free(report->builds);
+ }
+
+ if(report->parameters != NULL)
+ {
+  for(i=0; i<report->n_builds; i++)
+  {
+   if(report->parameters[i] != NULL)
+    free(report->parameters[i]);
+  }
+  free(report->parameters);
+ }
+
+ free(report);
+}
+
+int generate_report(struct buildmatrix_context *ctx)
+{
+ struct report_details *report;
+ struct service_list_strategy_report_context *sc;
+ struct service_list_builds_strategy_report_context *scb;
+ struct iterative_strategy s;
+ struct parameter_grid_row *pr;
+ char **value_ptr;
+ int i, allocation_size, j, x;
+
+ if((report = (struct report_details *) malloc(sizeof(struct report_details))) == NULL)
+ {
+  fprintf(stderr, "%s: malloc() failed: %s\n", ctx->error_prefix, strerror(errno));
+  return 1;
+ }
+
+ time(&(report->generation_time));
+ report->ctx = ctx;
+
+ if(open_database(ctx))
+  return 1;
+
+ if((report->project_name = resolve_configuration_value(ctx, "projectname")) == NULL)
+ {
+  fprintf(stderr, "%s: Can't figure out my project name.\n", ctx->error_prefix);
+  free_report(report);
+  close_database(ctx);
+  return 1;
+ }
+
+ s.start = service_list_strategy_report_start;
+ s.iterative = service_list_strategy_report_iterative;
+ s.done = service_list_strategy_report_done;
+ if((sc = (struct service_list_strategy_report_context *)
+          malloc(sizeof(struct service_list_strategy_report_context))) == NULL)
+  return 1;
+
+ s.strategy_context = sc;
+ ctx->service_simple_lists_strategy = s;
+
+ if(service_list_jobs(ctx))
+ {
+  free_report(report);
+  close_database(ctx);
+  return 1;
+ }
+ report->jobs_list = sc->array;
+ report->n_jobs = sc->array_size;
+
+ if(service_list_branches(ctx))
+ {
+  free_report(report);
+  close_database(ctx);
+  return 1;
+ }
+ report->branches_list = sc->array;
+ report->n_branches = sc->array_size;
+
+ if(service_list_hosts(ctx))
+ {
+  free_report(report);
+  close_database(ctx);
+  return 1;
+ }
+ report->hosts_list = sc->array;
+ report->n_hosts = sc->array_size;
+
+ if(service_list_users(ctx))
+ {
+  free_report(report);
+  close_database(ctx);
+  return 1;
+ }
+ report->users_list = sc->array;
+ report->n_users = sc->array_size;
+
+ if(service_list_parameters(ctx))
+ {
+  free_report(report);
+  close_database(ctx);
+  return 1;
+ }
+ report->parameters_list = sc->array;
+ report->n_parameters = sc->array_size;
+
+ s.start = service_list_builds_strategy_report_start;
+ s.iterative = service_list_builds_strategy_report_iterative;
+ s.done = service_list_builds_strategy_report_done;
+ if((scb = (struct service_list_builds_strategy_report_context *)
+          malloc(sizeof(struct service_list_builds_strategy_report_context))) == NULL)
+  return 1;
+ s.strategy_context = scb;
+ ctx->service_list_builds_strategy = s;
+
+ if(service_list_builds(ctx))
+ {
+  free_report(report);
+  close_database(ctx);
+  return 1;
+ }
+ report->builds = scb->array;
+ report->n_builds = scb->length;
+
+ allocation_size = report->n_builds * sizeof(struct parameters *);
+ if((report->parameters = (struct parameters **) malloc(allocation_size)) == NULL)
+ {
+  fprintf(stderr, "%s: malloc(%d) failed: %s\n", 
+          ctx->error_prefix, allocation_size, strerror(errno));
+  free_report(report);
+  close_database(ctx);
+  return 1;
+ } 
+
+ for(i=0; i<report->n_builds; i++)
+ {
+  ctx->build_id = report->builds[i]->build_id;
+  if(load_parameters_from_db(ctx))
+  {
+   fprintf(stderr, "%s: load_parameters() failed\n", ctx->error_prefix);
+   free_report(report);
+   close_database(ctx);
+   return 1;
+  }
+  report->parameters[i] = ctx->parameters;
+ }
+
+ if(report->n_parameters == 0)
+ {
+  report->parameter_rows = NULL;
+ } else {
+  allocation_size = report->n_parameters * sizeof(struct parameter_row *);
+  if((report->parameter_rows = (struct parameter_grid_row **) malloc(allocation_size)) == NULL)
+  {
+   fprintf(stderr, "%s: malloc(%d) failed: %s\n", 
+           ctx->error_prefix, allocation_size, strerror(errno));
+   free_report(report);
+   close_database(ctx);
+   return 1;
+  }
+
+  allocation_size = sizeof(struct parameter_grid_row) 
+                  + (sizeof(char *) * report->n_builds);
+
+  for(i=0; i<report->n_parameters; i++)
+  {
+   if((pr = (struct parameter_grid_row *) malloc(allocation_size)) == NULL)
+   {
+    fprintf(stderr, "%s: malloc(%d) failed: %s\n", 
+            ctx->error_prefix, allocation_size, strerror(errno));
+    free_report(report);
+    close_database(ctx);
+    return 1;
+   }
+   pr->values = (char **) ((char *) pr + sizeof(struct parameter_grid_row));
+   report->parameter_rows[i] = pr;
+
+   for(j=0; j < report->n_builds; j++)
+   {
+    value_ptr = &(pr->values[j]);
+    *value_ptr = NULL;
+    for(x=0; x<report->parameters[j]->n_pairs; x++)
+    {
+     if(strcmp(report->parameters_list[i], report->parameters[j]->keys[x]) == 0)
+      *value_ptr = report->parameters[j]->values[x];
+    }
+   }
+  }
+ }
+
+ report->n_tests = 0;
+
+ if(render_report(report))
+ {
+  fprintf(stderr, "%s: render_report() failed\n", ctx->error_prefix);
+  free_report(report);
+  close_database(ctx);
+  return 1;
+ }
+
+ free_report(report);
+ close_database(ctx);
+ return 0;
+}
+
+int append_list_build_data_array(const struct buildmatrix_context *ctx,
+                                 const struct list_builds_data *source, 
+                                 struct list_builds_data *** const array_ptr,
+                                 int * const length, int * const size)
+{
+ struct list_builds_data *copy, **array;
+ int allocation_size, new_size;
+
+ if((copy = copy_list_build_data(ctx, source)) == NULL)
+  return 1;
+
+ if(*length + 1 >= *size)
+ {
+
+  if(*size == 0)
+   new_size = 10;
+  else
+   new_size = *size * 2;
+
+  allocation_size = sizeof(struct list_builds_data *) * new_size;
+  if(*array_ptr == NULL)
+  {
+   if((array = (struct list_builds_data **) malloc(allocation_size)) == NULL)
+   {
+    fprintf(stderr, "%s: append_list_build_data_array(): malloc(%d) failed: %s\n", 
+            ctx->error_prefix, allocation_size, strerror(errno));
+    free(copy);
+    return 1;
+   }
+  } else {
+   if((array = (struct list_builds_data **) realloc(*array_ptr, allocation_size)) == NULL)
+   {
+    fprintf(stderr, "%s: append_list_build_data_array(): realloc(%d) failed: %s\n", 
+            ctx->error_prefix, allocation_size, strerror(errno));
+    free(copy);
+    return 1;
+   }
+  }
+
+  *array_ptr = array;
+  *size = new_size;
+ }
+
+ (*array_ptr)[(*length)++] = copy;
+
+ return 0;
+}
+
+struct list_builds_data *copy_list_build_data(const struct buildmatrix_context *const ctx,
+                                              const struct list_builds_data * const source)
+{
+ struct list_builds_data *copy;
+ int allocation_size, branch_length, job_length, revision_length, user_length, 
+     identifier_length, node_length, checksum_length, report_length, output_length;
+ char *str_ptr;
+
+ if(source == NULL)
+  return NULL;
+
+ allocation_size = sizeof(struct list_builds_data);
+
+ if(source->branch != NULL)
+  allocation_size += (branch_length = strlen(source->branch) + 1);
+
+ if(source->job_name != NULL)
+  allocation_size += (job_length = strlen(source->job_name) + 1);
+
+ if(source->build_node != NULL)
+  allocation_size += (node_length = strlen(source->build_node) + 1);
+
+ if(source->revision != NULL)
+  allocation_size += (revision_length = strlen(source->revision) + 1);
+
+ if(source->user != NULL)
+  allocation_size += (user_length = strlen(source->user) + 1);
+
+ if(source->unique_identifier != NULL)
+  allocation_size += (identifier_length = strlen(source->unique_identifier) + 1);
+
+ if(source->report_name != NULL)
+  allocation_size += (report_length = strlen(source->report_name) + 1);
+
+ if(source->output_name != NULL)
+  allocation_size += (output_length = strlen(source->output_name) + 1);
+
+ if(source->checksum_name != NULL)
+  allocation_size += (checksum_length = strlen(source->checksum_name) + 1);
+
+ if((copy = (struct list_builds_data *) malloc(allocation_size)) == NULL)
+ {
+  fprintf(stderr, "%s: copy_list_build_data(): malloc(%d) failed: %s\n", 
+          ctx->error_prefix, allocation_size, strerror(errno));
+  return NULL;
+ }
+
+ copy->build_id = source->build_id;
+ copy->build_result = source->build_result;
+ copy->build_time = source->build_time;
+ copy->passed = source->passed;
+ copy->failed = source->failed;
+ copy->incompleted = source->incompleted;
+ copy->has_parameters = source->has_parameters;
+ copy->has_tests = source->has_tests;
+
+ str_ptr = ((char *) copy) + sizeof(struct list_builds_data);
+
+ if(source->branch != NULL)
+ {
+  copy->branch = str_ptr;
+  memcpy(str_ptr, source->branch, branch_length);  
+  str_ptr += branch_length;
+ } else {
+  copy->branch = NULL;
+ }
+
+ if(source->job_name != NULL)
+ {
+  copy->job_name = str_ptr;
+  memcpy(str_ptr, source->job_name, job_length);  
+  str_ptr += job_length;
+ } else {
+  copy->job_name = NULL;
+ }
+
+ if(source->build_node != NULL)
+ {
+  copy->build_node = str_ptr;
+  memcpy(str_ptr, source->build_node, node_length);  
+  str_ptr += node_length;
+ } else {
+  copy->build_node = NULL;
+ }
+
+ if(source->revision != NULL)
+ {
+  copy->revision = str_ptr;
+  memcpy(str_ptr, source->revision, revision_length);  
+  str_ptr += revision_length;
+ } else {
+  copy->revision = NULL;
+ }
+
+ if(source->user != NULL)
+ {
+  copy->user = str_ptr;
+  memcpy(str_ptr, source->user, user_length);  
+  str_ptr += user_length;
+ } else {
+  copy->user = NULL;
+ }
+
+ if(source->unique_identifier != NULL)
+ {
+  copy->unique_identifier = str_ptr;
+  memcpy(str_ptr, source->unique_identifier, identifier_length);  
+  str_ptr += identifier_length;
+ } else {
+  copy->unique_identifier = NULL;
+ }
+
+ if(source->report_name != NULL)
+ {
+  copy->report_name = str_ptr;
+  memcpy(str_ptr, source->report_name, report_length);  
+  str_ptr += report_length;
+ } else {
+  copy->report_name = NULL;
+ }
+
+ if(source->output_name != NULL)
+ {
+  copy->output_name = str_ptr;
+  memcpy(str_ptr, source->output_name, output_length);  
+  str_ptr += output_length;
+ } else {
+  copy->output_name = NULL;
+ }
+
+ if(source->checksum_name != NULL)
+ {
+  copy->checksum_name = str_ptr;
+  memcpy(str_ptr, source->checksum_name, checksum_length);  
+  str_ptr += checksum_length;
+ } else {
+  copy->checksum_name = NULL;
+ }
+
+ return copy;
+}
+
+

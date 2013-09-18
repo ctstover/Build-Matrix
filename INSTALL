@@ -1,0 +1,29 @@
+This project uses Build Configuration Adjust for it's build system.
+While the project distributable of this is/will be included with the
+tarball releases, it is not included in the git repository. Therefor,
+to work with directly with the source tree from git, install BCA. More
+likely in such a use case, one would clone the BCA tree as well, do a
+build, but not install. Then soft link ./native/bca-candidate from the 
+BCA source folder to, ./bca in the Build Matrix source folder. 
+
+Platform specific notes:
+
+AIX 7.1
+
+I changed part of the sqlite3.pc file from:
+
+Name: SQLite
+Description: SQL database engine
+Version: 3.7.16
+Libs: -L${libdir} -lsqlite3
+Libs.private: -lpthread 
+Cflags: -I${includedir}
+
+to:
+
+Name: SQLite
+Description: SQL database engine
+Version: 3.7.16
+Libs: -L${libdir} -lsqlite3 -lpthread 
+Cflags: -I${includedir}
+
